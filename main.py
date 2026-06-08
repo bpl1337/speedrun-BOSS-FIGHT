@@ -219,7 +219,8 @@ class Game:
 
         # позиция внутри диапазона: быстрее убил и меньше получил урона = ближе к hi
         time_sec = self.boss_fight_time / 1000.0
-        time_score = max(0.0, min(1.0, (60.0 - time_sec) / 50.0))  # 10с=1, 60с=0
+        # мягче: полный балл уже при ~18с, ноль при ~65с
+        time_score = max(0.0, min(1.0, (65.0 - time_sec) / 47.0))
         start_hp = max(1, self.hp_at_boss_start)
         hp_lost = self.hp_at_boss_start - p.hp
         hp_score = max(0.0, min(1.0, p.hp / start_hp))
@@ -452,6 +453,7 @@ def update_battle(dt, keys):
     GAME.total_time += dt
     GAME.boss_fight_time += dt
 
+    hp_before = p.hp        # для счётчика «босс не наносил урон» (энергоформа)
     p.update(keys)
     b.update(p)
 
@@ -473,6 +475,7 @@ def update_battle(dt, keys):
     if aura and aura.colliderect(b.rect):
         dmg = C.AURA_DPS
         b.take_damage(dmg)
+        b.end_flight()                # огненная аура тоже сбивает с полёта
         p.aura_dealt += dmg
         if p.aura_dealt >= C.AURA_BUDGET:
             p.aura_dealt = 0.0
@@ -484,6 +487,7 @@ def update_battle(dt, keys):
         if f.alive and f.rect.colliderect(b.rect):
             b.take_damage(f.damage)
             b.knockback(f.x)
+            b.end_flight()            # фаербол сбивает летающего мага
             f.alive = False
     GAME.fireballs = [f for f in GAME.fireballs if f.alive]
 
@@ -510,6 +514,9 @@ def update_battle(dt, keys):
         if pr.alive and pr.rect.colliderect(p.rect):
             dmg = 2 if b.is_final else 1
             p.take_damage(dmg, direct=True)
+            # отталкивание снарядами — только если щит НЕ активен
+            if getattr(pr, "shove", 0) and not p.shield_up:
+                p.shove(pr.x, power=pr.shove)
             pr.alive = False
     GAME.boss_projectiles = [pr for pr in GAME.boss_projectiles if pr.alive]
 
@@ -546,6 +553,10 @@ def update_battle(dt, keys):
         pop["life"] -= 1
     GAME.popups = [pp for pp in GAME.popups if pp["life"] > 0]
 
+    # босс нанёс игроку урон -> сброс счётчика «без урона» (для энергоформы)
+    if p.hp < hp_before:
+        b.no_dmg_timer = 0
+
     # смерть босса
     if b.dead and b.death_timer <= 0:
         GAME.boss_defeated()
@@ -572,6 +583,7 @@ def draw_battle(surf):
     rwall = pygame.transform.flip(wall, True, False)
     surf.blit(rwall, (C.VIRTUAL_W - wm, 0))
 
+    GAME.boss.draw_fire(surf)        # огонь/подсветка половины карты (boss7)
     GAME.boss.draw(surf)
     for m in GAME.minions:
         m.draw(surf)

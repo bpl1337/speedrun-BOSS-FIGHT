@@ -30,9 +30,9 @@ DIFFICULTIES = {
 # Цены в магазине одинаковые на всех сложностях (настроены под EASY), поэтому
 # на MEDIUM/HARD денег меньше => сложнее. Округление границ — математическое.
 REWARD_TUNING = {
-    "EASY":   (1, 20, 1.5),
-    "MEDIUM": (1, 15, 1.25),
-    "HARD":   (0, 10, 1.1),
+    "EASY":   (3, 22, 1.5),
+    "MEDIUM": (2, 17, 1.25),
+    "HARD":   (1, 11, 1.1),
 }
 
 # Шанс босса увернуться от удара меча (по сложности). Сложнее => уворачивается чаще.
@@ -67,6 +67,10 @@ WALL_JUMP_DECAY = 0.82  # затухание толчка (чтобы можно
 BOSS_SCALE = 2.2
 BOSS_FINAL_SCALE = 2.7   # демон: кадр 288x160, контент ~107px
 
+# Глобальное ускорение боссов: движение и касты умений. НЕ влияет на личные
+# механики (юла, телепорт, призыв, энергоформа, шарик, полёт, рост силы).
+BOSS_SPEED_MULT = 1.8
+
 # Параметры 7 боссов: hp, скорость, урон по игроку, кулдаун атаки, фон, тип
 # Типы способностей:
 #   charger  — врывается рывком (контактный урон телом)
@@ -82,17 +86,18 @@ BOSS_FINAL_SCALE = 2.7   # демон: кадр 288x160, контент ~107px
 #   строку) — и босс этой локации сразу станет уникальным.
 BOSSES = [
     {"name": "Страж Леса",       "hp": 12, "speed": 2.0, "cd": 70, "bg": "assets_bg/bg1.png", "type": "charger",  "art": "assets_boss1"},
-    {"name": "Бамбуковый Дух",   "hp": 16, "speed": 2.3, "cd": 65, "bg": "assets_bg/bg2.png", "type": "jumper",   "art": "assets_boss2"},
+    {"name": "Пламенный Сёгун",  "hp": 16, "speed": 2.7, "cd": 48, "bg": "assets_bg/bg2.png", "type": "ranged",   "art": "assets_boss6"},
     {"name": "Туманный Самурай", "hp": 20, "speed": 2.6, "cd": 60, "bg": "assets_bg/bg3.png", "type": "ranged",   "art": "assets_boss3"},
-    {"name": "Алый Странник",    "hp": 26, "speed": 2.8, "cd": 55, "bg": "assets_bg/bg4.png", "type": "berserk",  "art": "assets_boss4"},
+    {"name": "Бамбуковый Дух",   "hp": 26, "speed": 2.8, "cd": 55, "bg": "assets_bg/bg4.png", "type": "jumper",   "art": "assets_boss2"},
     {"name": "Хозяин Тории",     "hp": 32, "speed": 3.0, "cd": 52, "bg": "assets_bg/bg5.png", "type": "summoner", "art": "assets_boss5"},
-    {"name": "Пламенный Сёгун",  "hp": 40, "speed": 3.2, "cd": 48, "bg": "assets_bg/bg6.png", "type": "ranged",   "art": "assets_boss6"},
+    {"name": "Алый Странник",    "hp": 40, "speed": 3.2, "cd": 48, "bg": "assets_bg/bg6.png", "type": "berserk",  "art": "assets_boss4"},
     {"name": "ТЁМНЫЙ ДАЙМЁ",     "hp": 60, "speed": 3.4, "cd": 44, "bg": "assets_bg/bg7.png", "type": "demon",    "art": "assets_boss7"},
 ]
 
 # ---- Щит игрока (доступен сразу, клавиша G) ----
-SHIELD_TIME = 75       # сколько кадров щит держится поднятым (~1.25с)
-SHIELD_COOLDOWN = 90   # перезарядка после блока (~1.5с)
+# Блокирует ВСЕ удары в течение SHIELD_TIME, затем перезарядка.
+SHIELD_TIME = 90       # 1.5 секунды активного щита
+SHIELD_COOLDOWN = 90   # перезарядка после спадания (~1.5с)
 
 # ---- Файрбол ----
 FIREBALL_COOLDOWN = 90  # 1.5 секунды
@@ -154,13 +159,13 @@ BOSS_SPEC = {
             "death": ("death.png", 100, 100),
             "cast": ("summon.png", 100, 100),
             "spin": ("skill1.png", 100, 100)},
-        # телепорт за спину: каждые cd кадров с шансом chance бьёт косой
-        "blink": {"cd": 180, "chance": 0.5, "offset": 95},
+        # телепорт за спину: каждые 3с (cd=180) гарантированно бьёт косой
+        "blink": {"cd": 180, "chance": 1.0, "offset": 95},
+        # «юла»: каждые cd кадров с шансом chance включается на min..max кадров.
+        # cd=300(5с), chance=0.8, длительность 180..540 кадров (3..9с).
+        "spin_cfg": {"cd": 300, "chance": 0.8, "min_dur": 180, "max_dur": 540,
+                     "spin_frames": [6, 7, 8]},
         "abilities": [
-            # «юла»: крутится последними 3 кадрами skill1, катается влево-вправо,
-            # бьёт контактом и сильно отбрасывает игрока. Длится 4–8с, раз в 7с.
-            {"kind": "spin", "min_dur": 240, "max_dur": 480, "cd": 420,
-             "spin_frames": [6, 7, 8]},
             # призыв чёрных слизней (чаще), они сносят HP контактом
             {"kind": "summon", "anim": "cast", "fire_frame": 4,
              "minion": ("summonIdle.png", 50, 50, 2.0),
@@ -179,12 +184,19 @@ BOSS_SPEC = {
             "jump": ("Jump.png", 128, 128),
             "cast_ball": ("Light_ball.png", 128, 128),
             "cast_beam": ("Light_charge.png", 128, 128)},
+        # Если 6с не наносит игроку урон — превращается в сгустки энергии
+        # (спрайт Charge.png) и 9с преследует игрока по 2D, рядом = 1 HP/сек.
+        "energy_form": {"trigger": 360, "duration": 540, "speed": 5.4,
+                        "near": 95, "hit_cd": 60,
+                        "frames": ("Charge.png", 64, 64, 2.0)},
+        # МОЛНИЯ (луч) — кастуется каждые 5с с шансом 80%
+        "scheduled": {"cd": 300, "chance": 0.8,
+                      "ability": {"kind": "beam", "anim": "cast_beam",
+                                  "fire_frame": 6, "reach": 540, "cd": 220}},
         "abilities": [
             {"kind": "projectile", "anim": "cast_ball", "fire_frame": 5,
              "proj": ("Charge.png", 64, 64, 1.6), "speed": 7, "radius": 22,
              "cd": 130},
-            {"kind": "beam", "anim": "cast_beam", "fire_frame": 6,
-             "reach": 540, "cd": 220},
             {"kind": "charge", "anim": "charge", "cd": 160},
             {"kind": "jump", "cd": 160}],
     },
@@ -206,6 +218,8 @@ BOSS_SPEC = {
         "flight": {"cd": 300, "proj": ("Charge_1.png", 128, 128, 0.7),
                    "interval": 65, "speed": 6, "radius": 20,
                    "color": (120, 170, 255)},
+        # каждый снаряд при попадании отталкивает игрока (≈ как отдача игрока)
+        "proj_shove": 22,
         "abilities": [
             {"kind": "projectile", "anim": "cast_sphere", "fire_frame": 10,
              "proj": ("Charge_1.png", 128, 128, 0.7), "speed": 5, "radius": 22,
@@ -228,6 +242,11 @@ BOSS_SPEC = {
             "flinch": ("hit.png", 247, 87), "death": ("death.png", 247, 87),
             "cast_saw": ("Pre-Attack 3.png", 247, 87),
             "nova": ("end-Attack 3.png", 247, 87)},
+        # фаза-шарик: при потере каждой 1/3 HP формируется в крутящийся шарик
+        # (mid-Attack 3) и 7с очень быстро носится по арене: то отскакивает от
+        # стен/пола/потолка, то «прилипает» и катится по периметру.
+        "ball_phase": {"duration": 420, "speed": 68, "hit_cd": 40, "ceiling": 50,
+                       "frames": ("mid-Attack 3.png", 247, 87, 1.0)},
         "abilities": [
             {"kind": "projectile", "anim": "cast_saw", "fire_frame": 2,
              "proj": ("mid-Attack 3.png", 247, 87, 1.0), "speed": 6,
@@ -248,14 +267,23 @@ BOSS_SPEC = {
             "jump": ("Jump.png", 128, 128),
             "cast_fire": ("Fireball.png", 128, 128),
             "cast_jet": ("Flame_jet.png", 128, 128)},
+        # Активный босс: часто кидает фаербол, прыгает, рвётся и бьёт мечом;
+        # луч (flame jet) — редко. (фаербол дублирован для веса при выборе)
         "abilities": [
             {"kind": "projectile", "anim": "cast_fire", "fire_frame": 5,
              "proj": ("Charge.png", 64, 64, 1.6), "speed": 7, "radius": 22,
-             "spin": True, "cd": 130},
+             "spin": True, "cd": 50},
+            {"kind": "projectile", "anim": "cast_fire", "fire_frame": 5,
+             "proj": ("Charge.png", 64, 64, 1.6), "speed": 7, "radius": 22,
+             "spin": True, "cd": 50},
+            {"kind": "projectile", "anim": "cast_fire", "fire_frame": 5,
+             "proj": ("Charge.png", 64, 64, 1.6), "speed": 7, "radius": 22,
+             "spin": True, "cd": 50},
+            {"kind": "charge", "anim": "charge", "cd": 75},
+            {"kind": "jump", "cd": 65},
+            {"kind": "jump", "cd": 65},
             {"kind": "beam", "anim": "cast_jet", "fire_frame": 5,
-             "reach": 500, "cd": 220},
-            {"kind": "charge", "anim": "charge", "cd": 170},
-            {"kind": "jump", "cd": 160}],
+             "reach": 500, "cd": 200}],
     },
 }
 
@@ -266,11 +294,11 @@ SKILLS = ["fireball", "dash", "double_jump", "fire_aura", "hp_regen", "mana_rege
 # На HARD — порядок случайный.
 SKILL_ORDER_FIXED = [
     "dash",         # босс 1
-    "double_jump",  # босс 2
-    "fire_aura",    # босс 3
-    "mana_regen",   # босс 4
-    "fireball",     # босс 5
-    "hp_regen",     # босс 6
+    "fireball",     # босс 2
+    "hp_regen",     # босс 3 — пассивный реген HP
+    "double_jump",  # босс 4
+    "mana_regen",   # босс 5 — пассивный реген маны
+    "fire_aura",    # босс 6
 ]
 SKILL_NAMES = {
     "fireball":    "ФАЙРБОЛ (E)",

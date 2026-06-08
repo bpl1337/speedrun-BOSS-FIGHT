@@ -41,9 +41,10 @@ class Fireball:
 class Projectile:
     """Снаряд босса. Может быть кружком-свечением или анимированным спрайтом."""
     def __init__(self, x, y, vx, vy, damage, color, radius=14, gravity=0.0,
-                 life=180, frames=None, spin=False, frame_speed=0.3):
+                 life=180, frames=None, spin=False, frame_speed=0.3, shove=0):
         self.x = x; self.y = y
         self.vx = vx; self.vy = vy
+        self.shove = shove          # сила отталкивания игрока при попадании
         self.damage = damage
         self.color = color
         self.radius = radius
@@ -327,10 +328,8 @@ class Player:
         # чит-бессмертие
         if self.god_mode:
             return False
-        # щит блокирует прямой удар, затем спадает и уходит в перезарядку
+        # щит блокирует ВСЕ удары, пока активен (не спадает после одного блока)
         if self.shield_up and direct:
-            self.shield_up = False
-            self.shield_cd = C.SHIELD_COOLDOWN
             return False
         if self.invuln > 0:
             return False
@@ -422,9 +421,9 @@ class Player:
             self.shield_cd -= 1
         if self.shield_up:
             self.shield_timer -= 1
-            if self.shield_timer <= 0:
+            if self.shield_timer <= 0:      # отдержал 1.5с -> перезарядка
                 self.shield_up = False
-                self.shield_cd = C.SHIELD_COOLDOWN // 2  # если не сблокировал — короче
+                self.shield_cd = C.SHIELD_COOLDOWN
 
         # атака
         if self.attacking:
@@ -548,8 +547,8 @@ class Boss:
         self.name = data["name"]
         self.max_hp = data["hp"]
         self.hp = data["hp"]
-        self.move_speed = data["speed"]
-        self.base_speed = data["speed"]
+        self.move_speed = data["speed"] * C.BOSS_SPEED_MULT
+        self.base_speed = self.move_speed
         self.attack_cd_max = data["cd"]
         self.is_final = is_final
         self.btype = data.get("type", "melee")
@@ -604,8 +603,25 @@ class Boss:
         self.spin_anim = 0.0
         self.spin_dir = 1
         self.spin_frames = None      # какие кадры крутить (из спека)
+        self.spin_cfg = None         # настройки юлы (cd/шанс/длительность)
+        self.spin_check_cd = 300
         self.blink_cfg = None
         self.blink_cd = 180
+        self.hover_timer = 0       # парение на высоте игрока после телепорта к стене
+        self.hover_y = 0
+        # запланированный каст (boss3 «молния» каждые N кадров с шансом)
+        self.sched_cfg = None
+        self.sched_ability = None
+        self.sched_check_cd = 300
+        # пассивный реген HP босса (boss7 демон)
+        self.hp_regen_frames = 0
+        self.hp_regen_acc = 0
+        # огненная половина карты (boss7 демон)
+        self.fire_cfg = None
+        self.fire_phase = 0        # 0 нет, 1 предупреждение, 2 горит
+        self.fire_phase_timer = 0
+        self.fire_timer = 0
+        self.fire_side = "left"
 
         # рост силы со временем (boss4) и летающий портал
         self.alive_frames = 0
@@ -617,6 +633,35 @@ class Boss:
         self.flight_cd = 0
         self.flight_t = 0
         self.energy_frames = None  # спрайт снаряда для полёта
+        self.proj_shove = 0        # отталкивание игрока снарядами (boss4)
+
+        # фаза-шарик (boss5): отскакивает по арене при потере 1/3 HP
+        self.ball_cfg = None
+        self.ball_frames = None
+        self.ball_mode = False
+        self.ball_timer = 0
+        self.ball_vx = 0.0
+        self.ball_vy = 0.0
+        self.ball_anim = 0.0
+        self.ball_hit_cd = 0
+        self.ball_pending = False
+        self.ball_thresholds = []
+        self.ball_triggered = set()
+        self.ball_aura_timer = 0     # таймер выпуска чёрных аур в фазе-шарик
+        self.ball_state = "bounce"   # bounce | roll
+        self.ball_state_timer = 0
+        self.ball_want_roll = False
+        self.roll_edge = "top"
+        self.roll_cw = True
+
+        # энергетическая форма (boss3): погоня, если долго не наносит урон
+        self.energy_cfg = None
+        self.energy_cluster = None   # кадры сгустков
+        self.energy_mode = False
+        self.energy_timer = 0
+        self.energy_hit_cd = 0
+        self.energy_anim = 0.0
+        self.no_dmg_timer = 0        # сколько не наносил урон игроку
 
         # каст-движок
         self.casting = None        # текущая способность-каст (dict) или None
@@ -637,13 +682,44 @@ class Boss:
                 {"kind": "charge", "anim": "run", "cd": 120},
                 {"kind": "jump", "cd": 140},
             ]
+            self.hp_regen_frames = 20      # пассивный реген: 1 HP / 20 кадров = 3 HP/сек
+            # огонь половины карты: раз в 10с, предупреждение 1.5с, горит 3.5с
+            self.fire_cfg = {"warn": 90, "burn": 210, "idle": 300, "dmg": 2}
+            self.fire_timer = 300          # первый поджог ~через 5с
         else:
             folder = data.get("art", "assets_boss1")
             spec = C.BOSS_SPEC.get(folder) or C.BOSS_SPEC["assets_boss1"]
             self.blink_cfg = spec.get("blink")
+            sc = spec.get("scheduled")
+            if sc:
+                self.sched_cfg = sc
+                self.sched_ability = dict(sc["ability"])
+                self.sched_check_cd = sc.get("cd", 300)
             if self.blink_cfg:
                 self.blink_cd = self.blink_cfg.get("cd", 180)
+            self.spin_cfg = spec.get("spin_cfg")
+            if self.spin_cfg:
+                self.spin_check_cd = self.spin_cfg.get("cd", 300)
             self.ts_cfg = spec.get("time_scaling")
+            self.proj_shove = spec.get("proj_shove", 0)
+            self.ball_cfg = spec.get("ball_phase")
+            if self.ball_cfg:
+                self.ball_thresholds = [self.max_hp * 2 / 3.0,
+                                        self.max_hp / 3.0]
+                try:
+                    f, fw, fh, sc = self.ball_cfg["frames"]
+                    self.ball_frames = assets.load_grid_anim(
+                        folder, f, fw, fh, sc)
+                except Exception as e:
+                    print("ball frames load fail:", e)
+            self.energy_cfg = spec.get("energy_form")
+            if self.energy_cfg:
+                try:
+                    f, fw, fh, sc = self.energy_cfg["frames"]
+                    self.energy_cluster = assets.load_grid_anim(
+                        folder, f, fw, fh, sc)
+                except Exception as e:
+                    print("energy frames load fail:", e)
             fl = spec.get("flight")
             if fl:
                 self.can_fly = True
@@ -688,6 +764,12 @@ class Boss:
 
     @property
     def rect(self):
+        if self.ball_mode:                 # компактный хитбокс шарика
+            r = 55
+            return pygame.Rect(self.x - r, self.y - r, r * 2, r * 2)
+        if self.energy_mode:               # компактный хитбокс сгустка энергии
+            r = 70
+            return pygame.Rect(self.x - r, self.y - r, r * 2, r * 2)
         return pygame.Rect(self.x - self.w // 2, self.y - self.h,
                            self.w, self.h)
 
@@ -698,10 +780,16 @@ class Boss:
         return pygame.Rect(self.x - reach, self.y - self.h, reach, self.h)
 
     def take_damage(self, dmg):
-        if self.dead:
+        if self.dead or self.ball_mode or self.energy_mode:  # в спец-фазах неуязвим
             return
         self.hp -= dmg
         self.hurt_timer = 14
+        # фаза-шарик (boss5): пересекли порог 2/3 или 1/3 HP -> запустить
+        if self.ball_cfg and self.hp > 0:
+            for thr in self.ball_thresholds:
+                if thr not in self.ball_triggered and self.hp <= thr:
+                    self.ball_triggered.add(thr)
+                    self.ball_pending = True
         if self.hp <= 0:
             self.hp = 0
             self.dead = True
@@ -782,25 +870,28 @@ class Boss:
             vy = math.sin(a) * spd
             self.new_projectiles.append(
                 Projectile(sx, sy, vx, vy, self._proj_dmg(), color, radius,
-                           frames=frames, spin=True))
+                           frames=frames, spin=True, shove=self.proj_shove))
 
     def _update_flight(self, player):
         import math
+        FS = 1.05                             # 1.5 * 0.7 (замедлен на 0.3x)
         self.flight_t += 1
         self.facing = 1 if player.x > self.x else -1
-        # парение по всей карте: высоко <-> низко
-        y_hi, y_lo = 200, C.GROUND_Y - 20
+        # вертикаль: парит по всей карте (быстрее)
+        y_hi, y_lo = 180, C.GROUND_Y - 20
         mid = (y_hi + y_lo) / 2.0
         amp = (y_lo - y_hi) / 2.0
-        self.y = mid + amp * math.sin(self.flight_t * 0.035)
+        self.y = mid + amp * math.sin(self.flight_t * 0.035 * FS)
         self.vy = 0
         self.on_ground = False
-        # дрейф к игроку, держим на прицеле
-        if abs(player.x - self.x) > 120:
-            self.x += 1.6 if player.x > self.x else -1.6
+        # по X держимся на ПРОТИВОПОЛОЖНОМ от игрока краю (улетаем от него) и
+        # ПОСТОЯННО колеблемся — никогда не статичны
+        side = (C.VIRTUAL_W - 180) if player.x < C.VIRTUAL_W / 2 else 180
+        self.x += (side - self.x) * 0.05 * FS                  # тяга к краю
+        self.x += math.sin(self.flight_t * 0.09) * 5.0 * FS    # вечное колебание
         self.x = max(70, min(C.VIRTUAL_W - 70, self.x))
         # обстрел (чаще с ростом силы)
-        interval = max(22, self.flight_cfg.get("interval", 65)
+        interval = max(18, int(self.flight_cfg.get("interval", 65) / FS)
                        - self.power_level * 6)
         if self.flight_t % interval == 0:
             self._energy_shot(player, self.flight_cfg.get("speed", 6),
@@ -809,6 +900,217 @@ class Boss:
                               self.energy_frames)
         self.state = "idle"
         self._advance_frame()
+
+    def _update_fire(self, player):
+        """Огонь половины карты: предупреждение -> горение -> пауза (цикл 10с).
+        Горит вся половина (от низа до верха); в ней игрок теряет HP (блок щитом)."""
+        cfg = self.fire_cfg
+        if self.fire_phase == 0:
+            self.fire_timer -= 1
+            if self.fire_timer <= 0:
+                self.fire_phase = 1
+                self.fire_phase_timer = cfg["warn"]
+                # поджигаем ту половину, где сейчас игрок
+                self.fire_side = "left" if player.x < C.VIRTUAL_W / 2 else "right"
+        elif self.fire_phase == 1:               # предупреждение (подсветка)
+            self.fire_phase_timer -= 1
+            if self.fire_phase_timer <= 0:
+                self.fire_phase = 2
+                self.fire_phase_timer = cfg["burn"]
+        elif self.fire_phase == 2:               # горит
+            self.fire_phase_timer -= 1
+            in_zone = ((self.fire_side == "left" and player.x < C.VIRTUAL_W / 2)
+                       or (self.fire_side == "right"
+                           and player.x >= C.VIRTUAL_W / 2))
+            if in_zone:
+                player.take_damage(cfg.get("dmg", 2), direct=True)
+            if self.fire_phase_timer <= 0:
+                self.fire_phase = 0
+                self.fire_timer = cfg["idle"]
+
+    def draw_fire(self, surf):
+        """Отрисовка предупреждения / огня половины карты."""
+        if self.fire_phase == 0 or not self.fire_cfg:
+            return
+        import math
+        x0 = 0 if self.fire_side == "left" else C.VIRTUAL_W // 2
+        w = C.VIRTUAL_W // 2
+        ov = pygame.Surface((w, C.GROUND_Y), pygame.SRCALPHA)
+        t = pygame.time.get_ticks() * 0.01
+        if self.fire_phase == 1:
+            # предупреждение: подсветка земли зоны (пульсирует)
+            a = 40 + int(35 * (0.5 + 0.5 * math.sin(t * 1.2)))
+            ov.fill((255, 80, 30, a // 3))
+            # ярче у земли
+            for i in range(80):
+                aa = int(a * (i / 80))
+                pygame.draw.line(ov, (255, 120, 40, aa),
+                                 (0, C.GROUND_Y - 80 + i), (w, C.GROUND_Y - 80 + i))
+        else:
+            # горит: оранжево-красная заливка + языки пламени
+            ov.fill((255, 70, 20, 90))
+            for i in range(0, w, 26):
+                fh = 60 + int(40 * (0.5 + 0.5 * math.sin(t + i * 0.05)))
+                col = (255, 160 + int(60 * math.sin(t + i)), 40, 150)
+                pygame.draw.polygon(ov, col, [
+                    (i, C.GROUND_Y), (i + 13, C.GROUND_Y - fh), (i + 26, C.GROUND_Y)])
+        surf.blit(ov, (x0, 0))
+
+    def _start_ball(self):
+        cfg = self.ball_cfg
+        sp = cfg.get("speed", 68)
+        self.ball_mode = True
+        self.ball_timer = cfg.get("duration", 420)
+        self.ball_hit_cd = 0
+        self.ball_anim = 0.0
+        self.ball_state = "bounce"
+        self.ball_state_timer = random.randint(45, 90)
+        self.ball_aura_timer = 15
+        self.ball_want_roll = False
+        self.ball_vx = random.choice([-1, 1]) * sp * 0.72
+        self.ball_vy = -sp * 0.72
+        self.y = C.GROUND_Y - 130
+        self.on_ground = False
+        self.casting = None
+        self.attacking = False
+        self.charging = False
+
+    def _ball_bounce(self, d, left, right, top, bottom):
+        import math
+        mag = max(0.01, math.hypot(self.ball_vx, self.ball_vy))
+        self.x += self.ball_vx / mag * d
+        self.y += self.ball_vy / mag * d
+        hit = None
+        if self.x <= left:
+            self.x = left; self.ball_vx = abs(self.ball_vx); hit = "left"
+        elif self.x >= right:
+            self.x = right; self.ball_vx = -abs(self.ball_vx); hit = "right"
+        if self.y <= top:
+            self.y = top; self.ball_vy = abs(self.ball_vy); hit = "top"
+        elif self.y >= bottom:
+            self.y = bottom; self.ball_vy = -abs(self.ball_vy); hit = "bottom"
+        # «магнит»: при ударе о стену (когда пора) прилипаем и катимся по периметру
+        if hit and self.ball_want_roll:
+            self.ball_want_roll = False
+            self.ball_state = "roll"
+            self.ball_state_timer = random.randint(110, 200)
+            self.roll_edge = hit
+            self.roll_cw = random.choice([True, False])
+
+    def _ball_roll(self, d, left, right, top, bottom):
+        cw = self.roll_cw
+        e = self.roll_edge
+        if e == "top":
+            self.y = top
+            self.x += d if cw else -d
+            if cw and self.x >= right:
+                self.x = right; self.roll_edge = "right"
+            elif not cw and self.x <= left:
+                self.x = left; self.roll_edge = "left"
+        elif e == "right":
+            self.x = right
+            self.y += d if cw else -d
+            if cw and self.y >= bottom:
+                self.y = bottom; self.roll_edge = "bottom"
+            elif not cw and self.y <= top:
+                self.y = top; self.roll_edge = "top"
+        elif e == "bottom":
+            self.y = bottom
+            self.x += -d if cw else d
+            if cw and self.x <= left:
+                self.x = left; self.roll_edge = "left"
+            elif not cw and self.x >= right:
+                self.x = right; self.roll_edge = "right"
+        else:  # left
+            self.x = left
+            self.y += -d if cw else d
+            if cw and self.y <= top:
+                self.y = top; self.roll_edge = "top"
+            elif not cw and self.y >= bottom:
+                self.y = bottom; self.roll_edge = "bottom"
+
+    def _update_ball(self, player):
+        cfg = self.ball_cfg
+        sp = cfg.get("speed", 68)
+        left, right = 70, C.VIRTUAL_W - 70
+        top, bottom = cfg.get("ceiling", 50), C.GROUND_Y
+        self.ball_timer -= 1
+        self.ball_anim += 0.9
+        if self.ball_hit_cd > 0:
+            self.ball_hit_cd -= 1
+
+        # каждую секунду выпускаем 5 чёрных аур вокруг себя (1 HP, блок щитом)
+        self.ball_aura_timer -= 1
+        if self.ball_aura_timer <= 0:
+            self.ball_aura_timer = 60
+            import math
+            for k in range(5):
+                a = (k / 5.0) * 2 * math.pi + self.ball_anim * 0.1
+                self.new_projectiles.append(
+                    Projectile(self.x, self.y, math.cos(a) * 5.0,
+                               math.sin(a) * 5.0, 1, (45, 20, 60), 17,
+                               life=130))
+
+        # переключение bounce <-> roll
+        self.ball_state_timer -= 1
+        if self.ball_state == "bounce":
+            # отскакали достаточно — на следующем ударе о стену «примагнитимся»
+            if self.ball_state_timer <= 0:
+                self.ball_want_roll = True
+        else:   # roll — покатались по периметру, отлипаем и снова отскакиваем
+            if self.ball_state_timer <= 0:
+                self.ball_state = "bounce"
+                self.ball_state_timer = random.randint(60, 130)
+                self.ball_vx = random.choice([-1, 1]) * sp * 0.72
+                self.ball_vy = random.choice([-1, 1]) * sp * 0.72
+
+        # движение суб-шагами (высокая скорость без проскоков сквозь игрока)
+        steps = max(1, int(sp / 11))
+        d = sp / steps
+        for _ in range(steps):
+            if self.ball_state == "roll":
+                self._ball_roll(d, left, right, top, bottom)
+            else:
+                self._ball_bounce(d, left, right, top, bottom)
+            if self.ball_hit_cd <= 0 and self.rect.colliderect(player.rect):
+                if player.take_damage(self._proj_dmg(), direct=True):
+                    self.ball_hit_cd = cfg.get("hit_cd", 40)
+
+        if self.ball_timer <= 0:
+            self.ball_mode = False
+            self.y = C.GROUND_Y
+            self.vy = 0
+            self.on_ground = True
+
+    def _update_energy(self, player):
+        """Энергетическая форма: летит прямо к игроку (скорость > игрока, в 2D),
+        поэтому всегда догоняет; рядом снимает 1 HP/сек. Длится duration."""
+        import math
+        cfg = self.energy_cfg
+        self.energy_timer -= 1
+        self.energy_anim += 0.45
+        if self.energy_hit_cd > 0:
+            self.energy_hit_cd -= 1
+        tx = player.x
+        ty = player.y - player.h * 0.5
+        dx, dy = tx - self.x, ty - self.y
+        d = max(1.0, math.hypot(dx, dy))
+        sp = cfg.get("speed", 5.4)
+        self.x += dx / d * sp
+        self.y += dy / d * sp
+        self.x = max(40, min(C.VIRTUAL_W - 40, self.x))
+        self.y = max(60, min(C.GROUND_Y, self.y))
+        self.facing = 1 if dx >= 0 else -1
+        # урон рядом — раз в hit_cd (1 сек)
+        if d < cfg.get("near", 95) and self.energy_hit_cd <= 0:
+            if player.take_damage(1, direct=True):
+                self.energy_hit_cd = cfg.get("hit_cd", 60)
+        if self.energy_timer <= 0:          # вернуться в обычную форму
+            self.energy_mode = False
+            self.no_dmg_timer = 0
+            self.y = C.GROUND_Y
+            self.vy = 0
+            self.on_ground = True
 
     def _do_effect(self, ab, player):
         kind = ab["kind"]
@@ -910,6 +1212,17 @@ class Boss:
             self.pending_slam = True
         self.ability_cd = cd
 
+    def _start_spin(self, player):
+        cfg = self.spin_cfg or {}
+        self.spinning = True
+        self.attacking = False       # юла перебивает незаконченный взмах
+        self.melee_active = False
+        self.spin_timer = random.randint(cfg.get("min_dur", 180),
+                                         cfg.get("max_dur", 540))
+        self.spin_dir = 1 if player.x >= self.x else -1
+        self.spin_anim = 0.0
+        self.spin_frames = cfg.get("spin_frames")
+
     def _trigger_ability(self, player):
         # случайная способность из набора (демон тоже использует набор)
         if not self.abilities:
@@ -921,14 +1234,6 @@ class Boss:
             self._start_charge(20, ab.get("cd", 130))
         elif kind == "jump":
             self._start_jump(ab.get("cd", 150))
-        elif kind == "spin":
-            self.spinning = True
-            self.spin_timer = random.randint(ab.get("min_dur", 240),
-                                             ab.get("max_dur", 480))
-            self.spin_dir = 1 if player.x >= self.x else -1
-            self.spin_anim = 0.0
-            self.spin_frames = ab.get("spin_frames")
-            self.ability_cd = ab.get("cd", 420)
         else:
             # каст: проигрываем анимацию тела, снаряд/луч/призыв в fire_frame
             self.casting = ab
@@ -941,6 +1246,8 @@ class Boss:
         if self.dead:
             self.death_timer -= 1
             self.flying = False
+            self.energy_mode = False
+            self.ball_mode = False
             if self.y < C.GROUND_Y:          # упасть, если умер в воздухе
                 self.vy += C.GRAVITY
                 self.y = min(C.GROUND_Y, self.y + self.vy)
@@ -951,6 +1258,25 @@ class Boss:
                 self.frame = len(self.anims[ds]) - 1
             return
 
+        # огонь половины карты (boss7): тикает всегда, независимо от состояния
+        if self.fire_cfg:
+            self._update_fire(player)
+
+        # ФАЗА-ШАРИК (boss5): отскакивает по арене, неуязвим, 7с
+        if self.ball_pending and not self.ball_mode:
+            self.ball_pending = False
+            self._start_ball()
+        if self.ball_mode:
+            self._update_ball(player)
+            return
+
+        # пассивный реген HP (boss7 демон): 1 HP за hp_regen_frames кадров
+        if self.hp_regen_frames > 0 and 0 < self.hp < self.max_hp:
+            self.hp_regen_acc += 1
+            if self.hp_regen_acc >= self.hp_regen_frames:
+                self.hp_regen_acc = 0
+                self.hp = min(self.max_hp, self.hp + 1)
+
         # рост силы со временем (boss4): уровень за каждые period кадров жизни
         self.alive_frames += 1
         if self.ts_cfg:
@@ -958,24 +1284,47 @@ class Boss:
                 self.ts_cfg.get("max_level", 6),
                 self.alive_frames // self.ts_cfg.get("period", 420))
 
+        # ЭНЕРГОФОРМА (boss3): если долго не наносил урон — гонится за игроком
+        if self.energy_cfg:
+            self.no_dmg_timer += 1
+            if self.energy_mode:
+                self._update_energy(player)
+                return
+            if (self.no_dmg_timer >= self.energy_cfg.get("trigger", 360)
+                    and self.on_ground and not self.casting
+                    and not self.charging and not self.attacking
+                    and not self.spinning):
+                self.energy_mode = True
+                self.energy_timer = self.energy_cfg.get("duration", 540)
+                self.energy_hit_cd = 0
+                return
+
         # ПОЛЁТ на портале: парит и обстреливает, сбивается мечом (см. main)
         if self.flying:
             self._update_flight(player)
             return
 
-        # вертикальная физика (для прыгуна и общей надёжности)
-        was_air = not self.on_ground
-        self.vy += C.GRAVITY
-        self.y += self.vy
-        if self.y >= C.GROUND_Y:
-            self.y = C.GROUND_Y
+        # парение на высоте игрока (после телепорта к стене) — гравитация выкл
+        hovering = self.hover_timer > 0
+        if hovering:
+            self.hover_timer -= 1
+            self.y = self.hover_y
             self.vy = 0
-            if was_air and self.pending_slam:
-                self._shockwave(C.BOSS_PROJ_COLOR["jumper"])
-                self.pending_slam = False
-            self.on_ground = True
-        else:
             self.on_ground = False
+        else:
+            # вертикальная физика (для прыгуна и общей надёжности)
+            was_air = not self.on_ground
+            self.vy += C.GRAVITY
+            self.y += self.vy
+            if self.y >= C.GROUND_Y:
+                self.y = C.GROUND_Y
+                self.vy = 0
+                if was_air and self.pending_slam:
+                    self._shockwave(C.BOSS_PROJ_COLOR["jumper"])
+                    self.pending_slam = False
+                self.on_ground = True
+            else:
+                self.on_ground = False
 
         # ПРИОРИТЕТ: отброс от удара игрока. Применяется ПЕРВЫМ и прерывает
         # любое действие на время отдачи — босс гарантированно отлетает,
@@ -1007,6 +1356,55 @@ class Boss:
             self.move_speed = self.base_speed * 1.6
             self.attack_cd_max = int(self.attack_cd_max * 0.7)
 
+        # ТЕЛЕПОРТ (boss2): каждые cd с шансом chance. Работает ВМЕСТЕ с юлой:
+        # во время юлы — просто переносит её к игроку; вне юлы — телепорт + взмах.
+        # Цель: за спину впритык; если игрок на стене / у края — перед лицом.
+        if (self.blink_cfg and self.on_ground
+                and not self.casting and not self.charging):
+            self.blink_cd -= 1
+            if self.blink_cd <= 0:
+                self.blink_cd = self.blink_cfg.get("cd", 180)
+                if random.random() < self.blink_cfg.get("chance", 1.0):
+                    off = self.blink_cfg.get("offset", 95)
+                    behind = player.x - player.facing * off
+                    on_wall = getattr(player, "wall_sliding", False)
+                    if on_wall:
+                        # игрок на стене — тепаемся К НЕМУ (на его высоту, перед
+                        # лицом) и зависаем на время взмаха
+                        tx = player.x + player.facing * off
+                        self.hover_y = max(60, player.y)
+                        self.y = self.hover_y
+                        self.hover_timer = 50
+                    elif behind < 80 or behind > C.VIRTUAL_W - 80:
+                        tx = player.x + player.facing * off   # перед лицом
+                    else:
+                        tx = behind                            # за спину
+                    self.x = max(70, min(C.VIRTUAL_W - 70, tx))
+                    self.facing = 1 if player.x > self.x else -1
+                    if self.spinning:
+                        self.spin_dir = self.facing   # юла продолжится отсюда
+                    else:
+                        self.attacking = True
+                        self.attack_timer = 0
+                        self.melee_variant = "attack"
+                        self.melee_active = False
+                        self.hit_done = False
+                        return
+
+        # МОЛНИЯ по расписанию (boss3): каждые cd кадров с шансом chance
+        if (self.sched_cfg and not self.casting and not self.charging
+                and not self.spinning and not self.attacking and self.on_ground):
+            self.sched_check_cd -= 1
+            if self.sched_check_cd <= 0:
+                self.sched_check_cd = self.sched_cfg.get("cd", 300)
+                if random.random() < self.sched_cfg.get("chance", 0.8):
+                    self.casting = self.sched_ability
+                    self.cast_anim = self.sched_ability.get("anim", "attack")
+                    self.cast_t = 0.0
+                    self.cast_fired = False
+                    self.beam_active = False
+                    return
+
         # старт ПОЛЁТА (boss4): откат прошёл, на земле, не занят другим действием
         if (self.can_fly and self.flight_cd <= 0 and self.on_ground
                 and not self.charging and not self.casting
@@ -1014,6 +1412,17 @@ class Boss:
             self.flying = True
             self.flight_t = 0
             return
+
+        # старт ЮЛЫ (boss2): каждые cd кадров с шансом chance, длительность 3–9с.
+        # Может стартовать даже во время взмаха (не блокируется телепортом).
+        if self.spin_cfg and not self.spinning:
+            self.spin_check_cd -= 1
+            if self.spin_check_cd <= 0:
+                self.spin_check_cd = self.spin_cfg.get("cd", 300)
+                if (self.on_ground and not self.casting and not self.charging
+                        and random.random() < self.spin_cfg.get("chance", 0.8)):
+                    self._start_spin(player)
+                    return
 
         # рывок (charger/berserk/demon)
         if self.charging:
@@ -1079,7 +1488,7 @@ class Boss:
                 self.cast_anim = "attack"
             frames = self.anims[self.cast_anim]
             self.state = self.cast_anim
-            self.cast_t += ab.get("anim_speed", 0.3)
+            self.cast_t += ab.get("anim_speed", 0.3) * C.BOSS_SPEED_MULT
             idx = int(self.cast_t)
             if not self.cast_fired and idx >= ab.get("fire_frame", 2):
                 self._do_effect(ab, player)
@@ -1092,25 +1501,6 @@ class Boss:
                 self.beam_active = False
                 self.ability_cd = ab.get("cd", 140)
             return
-
-        # телепорт за спину (boss2): раз в cd кадров с шансом chance —
-        # тепается ровно за спину игрока и бьёт косой. Не накладывается на
-        # другие умения (сюда попадаем, только если не крутимся/не бьём/не кастуем).
-        if self.blink_cfg and self.on_ground:
-            self.blink_cd -= 1
-            if self.blink_cd <= 0:
-                self.blink_cd = self.blink_cfg.get("cd", 180)
-                if random.random() < self.blink_cfg.get("chance", 0.5):
-                    off = self.blink_cfg.get("offset", 95)
-                    tx = player.x - player.facing * off
-                    self.x = max(70, min(C.VIRTUAL_W - 70, tx))
-                    self.facing = player.facing
-                    self.attacking = True
-                    self.attack_timer = 0
-                    self.melee_variant = "attack"
-                    self.melee_active = False
-                    self.hit_done = False
-                    return
 
         # запуск способности
         if (self.ability_cd <= 0 and not self.attacking and not self.casting
@@ -1162,6 +1552,38 @@ class Boss:
         return frames[idx]
 
     def draw(self, surf):
+        # фаза-шарик: крутящийся отскакивающий шар (mid-Attack 3)
+        if self.ball_mode and self.ball_frames:
+            cx, cy = int(self.x), int(self.y)
+            glow = pygame.Surface((150, 150), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (200, 220, 255, 70), (75, 75), 60)
+            pygame.draw.circle(glow, (160, 200, 255, 90), (75, 75), 38)
+            surf.blit(glow, (cx - 75, cy - 75))
+            img = self.ball_frames[int(self.ball_anim) % len(self.ball_frames)]
+            img = pygame.transform.rotate(img, (self.ball_anim * 47) % 360)
+            surf.blit(img, img.get_rect(center=(cx, cy)))
+            return
+
+        # энергетическая форма: несколько анимированных сгустков (не статично)
+        if self.energy_mode and self.energy_cluster:
+            import math
+            fr = self.energy_cluster
+            nf = len(fr)
+            cx, cy = int(self.x), int(self.y)
+            # лёгкое свечение-ореол
+            glow = pygame.Surface((200, 200), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (180, 210, 120, 50), (100, 100), 90)
+            surf.blit(glow, (cx - 100, cy - 100))
+            for i, (ox, oy, ph) in enumerate(
+                    [(0, 0, 0), (-30, -16, 2), (28, -12, 4),
+                     (-14, 20, 6), (18, 18, 1)]):
+                idx = int(self.energy_anim + i * 1.7) % nf
+                img = fr[idx]
+                wob = int(math.sin((self.energy_anim + ph) * 0.5) * 5)
+                r = img.get_rect(center=(cx + ox, cy + oy + wob))
+                surf.blit(img, r)
+            return
+
         # портал под ногами во время полёта (в цвет выстрелов)
         if self.flying and self.flight_cfg:
             import math
