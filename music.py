@@ -1,9 +1,3 @@
-"""Процедурная чиптюн-музыка + менеджер воспроизведения.
-
-Генерирует music/calm.wav и music/battle.wav при первом запуске.
-Если положить свой файл music/calm.(ogg|mp3|wav) или music/battle.* —
-игра возьмёт его вместо сгенерированного.
-"""
 import os
 import math
 import wave
@@ -14,13 +8,12 @@ MUSIC_DIR = os.path.join(HERE, "music")
 SR = 22050
 
 
-# ---------------- синтез ----------------
 def _midi_freq(n):
     return 440.0 * (2.0 ** ((n - 69) / 12.0))
 
 
 def _env(i, total, atk, rel):
-    """Огибающая 0..1 (атака/спад) для убирания щелчков."""
+
     if i < atk:
         return i / atk
     if i > total - rel:
@@ -38,7 +31,7 @@ def _tri(phase):
 
 
 def _render(events, length_s, drums=None):
-    """events: список (start_s, dur_s, midi, amp, wave) -> буфер float."""
+
     n = int(length_s * SR)
     buf = [0.0] * n
     for (start, dur, midi, amp, wav) in events:
@@ -59,7 +52,7 @@ def _render(events, length_s, drums=None):
             else:
                 v = _tri(phase)
             buf[idx] += v * amp * _env(i, d, atk, rel)
-    # ударные (battle)
+
     if drums:
         for (t, kind) in drums:
             idx0 = int(t * SR)
@@ -69,9 +62,8 @@ def _render(events, length_s, drums=None):
                     if idx0 + i >= n:
                         break
                     ph = 90 * (i / SR) * math.exp(-6 * i / d)
-                    buf[idx0 + i] += math.sin(2 * math.pi * ph) * \
-                        0.5 * math.exp(-5 * i / d)
-            else:  # hat — короткий шум
+                    buf[idx0 + i] += math.sin(2 * math.pi * ph) * 0.5 * math.exp(-5 * i / d)
+            else:
                 d = int(0.03 * SR)
                 seed = idx0
                 for i in range(d):
@@ -84,7 +76,7 @@ def _render(events, length_s, drums=None):
 
 
 def _write_wav(path, buf):
-    # нормализация
+
     peak = max(1e-6, max(abs(x) for x in buf))
     g = 0.9 / peak
     with wave.open(path, "w") as w:
@@ -102,22 +94,22 @@ def _gen_calm(path):
     bpm = 84
     beat = 60.0 / bpm
     bar = beat * 4
-    # прогрессия Am F C G (в C мажоре), 2 круга = 8 тактов
+
     chords = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]]
     prog = chords + chords
     length = len(prog) * bar
     ev = []
     for bi, ch in enumerate(prog):
         t0 = bi * bar
-        # пад — выдержанный аккорд
+
         for note in ch:
             ev.append((t0, bar, note + 12, 0.10, "tri"))
-        # арпеджио восьмыми
+
         seq = [ch[0], ch[1], ch[2], ch[1]] * 2
         for k, note in enumerate(seq):
             ev.append((t0 + k * (beat / 2), beat / 2 * 0.9,
                        note + 24, 0.16, "tri"))
-        # бас
+
         ev.append((t0, beat * 2, ch[0], 0.18, "sq25"))
         ev.append((t0 + beat * 2, beat * 2, ch[0], 0.18, "sq25"))
     _write_wav(path, _render(ev, length))
@@ -127,7 +119,7 @@ def _gen_battle(path):
     bpm = 150
     beat = 60.0 / bpm
     bar = beat * 4
-    # Em C G D
+
     chords = [[52, 55, 59], [48, 52, 55], [55, 59, 62], [50, 54, 57]]
     prog = chords + chords
     length = len(prog) * bar
@@ -135,23 +127,22 @@ def _gen_battle(path):
     drums = []
     for bi, ch in enumerate(prog):
         t0 = bi * bar
-        # бас восьмыми (драйв)
+
         for k in range(8):
             ev.append((t0 + k * (beat / 2), beat / 2 * 0.95,
                        ch[0] - 12, 0.22, "sq"))
-        # арп шестнадцатыми
+
         arp = [ch[0], ch[1], ch[2], ch[1]] * 4
         for k, note in enumerate(arp):
             ev.append((t0 + k * (beat / 4), beat / 4 * 0.9,
                        note + 12, 0.13, "sq25"))
-        # ударные
+
         for k in range(4):
             drums.append((t0 + k * beat, "kick"))
             drums.append((t0 + k * beat + beat / 2, "hat"))
     _write_wav(path, _render(ev, length, drums))
 
 
-# ---------------- менеджер ----------------
 _inited = False
 _current = None
 
@@ -191,7 +182,7 @@ def init():
 
 
 def play(name, volume=0.5):
-    """name: 'calm' или 'battle'."""
+
     global _current
     if not _inited:
         return

@@ -1,4 +1,4 @@
-"""Самурай vs 7 Боссов — главный файл."""
+import os as _os
 import sys
 import random
 import pygame
@@ -12,7 +12,7 @@ pygame.init()
 pygame.display.set_caption("Путь Самурая")
 music.init()
 
-# Полноэкранный режим, отрисовка в виртуальный буфер 1280x720
+
 _info = pygame.display.Info()
 _dw, _dh = _info.current_w, _info.current_h
 if _dw <= 0 or _dh <= 0:
@@ -24,7 +24,7 @@ if SCREEN_W <= 0 or SCREEN_H <= 0:
 virt = pygame.Surface((C.VIRTUAL_W, C.VIRTUAL_H))
 clock = pygame.time.Clock()
 
-# Масштаб виртуального буфера под реальный экран (с сохранением пропорций)
+
 _scale = min(SCREEN_W / C.VIRTUAL_W, SCREEN_H / C.VIRTUAL_H)
 if _scale <= 0:
     _scale = 1.0
@@ -35,14 +35,10 @@ _blit_y = (SCREEN_H - _blit_h) // 2
 
 
 def to_virt(pos):
-    """Координаты мыши экрана -> виртуальные."""
+
     mx, my = pos
     return ((mx - _blit_x) / _scale, (my - _blit_y) / _scale)
 
-
-# ---------- Шрифты ----------
-# SysFont ломается на Python 3.14, поэтому грузим .ttf напрямую.
-import os as _os
 
 _FONT_FILE = None
 for _cand in ("arialbd.ttf", "arial.ttf", "segoeui.ttf", "calibri.ttf"):
@@ -56,7 +52,7 @@ def font(size, bold=True):
     if _FONT_FILE:
         f = pygame.font.Font(_FONT_FILE, size)
     else:
-        f = pygame.font.Font(None, size)   # встроенный шрифт pygame
+        f = pygame.font.Font(None, size)
     f.set_bold(bold and _FONT_FILE is None)
     return f
 
@@ -88,37 +84,33 @@ def draw_bar(surf, x, y, w, h, frac, color, bg=(40, 40, 48)):
     pygame.draw.rect(surf, C.WHITE, (x, y, w, h), 2, border_radius=4)
 
 
-# =====================================================================
-#  СОСТОЯНИЕ ИГРЫ
-# =====================================================================
 class Game:
     def __init__(self):
         self.state = "MENU"
         self.player = None
         self.difficulty = "MEDIUM"
-        self.boss_index = 0           # какой босс впереди (0..6)
-        self.skill_order = []         # порядок выпадения умений
+        self.boss_index = 0
+        self.skill_order = []
         self.boss = None
         self.fireballs = []
         self.boss_projectiles = []
         self.minions = []
-        self.vfx = []         # одноразовые эффекты (поофы и т.п.)
-        self.popups = []      # всплывающие надписи (MISS! и т.п.)
-        self.total_time = 0.0         # общий таймер (мс)
-        self.boss_start_time = 0.0    # время начала текущего боя
+        self.vfx = []
+        self.popups = []
+        self.total_time = 0.0
+        self.boss_start_time = 0.0
         self.boss_fight_time = 0.0
         self.hp_at_boss_start = 0
         self.bg_cache = {}
 
-        self.last_reward = {}         # для экрана награды
+        self.last_reward = {}
         self.last_skill = None
         self.shop_msg = ""
-        self.shop_costs = {}          # текущая цена каждого предмета
+        self.shop_costs = {}
         self.princess_level = None
         self.menu_buttons = []
         self.shop_buttons = []
 
-    # ---------- запуск новой игры ----------
     def start_new(self, difficulty):
         self.difficulty = difficulty
         hp = C.DIFFICULTIES[difficulty]["hp"]
@@ -126,7 +118,7 @@ class Game:
         self.boss_index = 0
         self.total_time = 0.0
         self.fireballs = []
-        # EASY/MEDIUM — фиксированный порядок умений; HARD — случайный
+
         if difficulty == "HARD":
             self.skill_order = C.SKILLS[:]
             random.shuffle(self.skill_order)
@@ -141,7 +133,6 @@ class Game:
             self.bg_cache[key] = assets.scale_bg(name, size)
         return self.bg_cache[key]
 
-    # ---------- магазин ----------
     def enter_shop(self):
         self.state = "SHOP"
         self.shop_msg = ""
@@ -179,7 +170,6 @@ class Game:
         self.shop_costs[iid] = cost + item["grow"]
         self.shop_msg = "Куплено: " + item["name"]
 
-    # ---------- начать бой ----------
     def start_battle(self):
         self.state = "BATTLE"
         data = C.BOSSES[self.boss_index]
@@ -196,11 +186,10 @@ class Game:
         self.player.y = C.GROUND_Y
         self.boss_fight_time = 0.0
         self.hp_at_boss_start = self.player.hp
-        # выдать ману если файрбол уже есть
+
         if "fireball" in self.player.skills and self.player.max_mana < 1:
             self.player.max_mana = 1
 
-    # ---------- победа над боссом ----------
     def add_popup(self, x, y, txt, color):
         self.popups.append({"x": x, "y": y, "txt": txt, "color": color,
                             "life": 48, "max": 48})
@@ -208,18 +197,16 @@ class Game:
     def boss_defeated(self):
         p = self.player
 
-        def rnd(x):                       # математическое округление (half-up)
+        def rnd(x):
             return int(x + 0.5)
 
-        # границы награды для текущего босса (зависят от сложности)
         lo0, hi0, factor = C.REWARD_TUNING[self.difficulty]
         mult = factor ** self.boss_index
         lo = rnd(lo0 * mult)
         hi = rnd(hi0 * mult)
 
-        # позиция внутри диапазона: быстрее убил и меньше получил урона = ближе к hi
         time_sec = self.boss_fight_time / 1000.0
-        # мягче: полный балл уже при ~18с, ноль при ~65с
+
         time_score = max(0.0, min(1.0, (65.0 - time_sec) / 47.0))
         start_hp = max(1, self.hp_at_boss_start)
         hp_lost = self.hp_at_boss_start - p.hp
@@ -243,7 +230,7 @@ class Game:
             self.last_skill = skill
             self.state = "REWARD"
         else:
-            # финал — принцесса
+
             self.compute_princess()
             self.state = "WIN"
 
@@ -267,9 +254,6 @@ class Game:
 GAME = Game()
 
 
-# =====================================================================
-#  ЭКРАНЫ
-# =====================================================================
 def draw_menu(surf, mouse):
     bg = GAME.get_bg("assets_bg/bg5.png", (C.VIRTUAL_W, C.VIRTUAL_H))
     surf.blit(bg, (0, 0))
@@ -296,7 +280,6 @@ def draw_menu(surf, mouse):
         text(surf, ln, F_SMALL, C.WHITE, center=(C.VIRTUAL_W // 2, y))
         y += 30
 
-    # кнопки сложности
     GAME.menu_buttons = []
     diffs = [("EASY", C.GREEN), ("MEDIUM", C.GOLD), ("HARD", C.RED)]
     bw, bh = 280, 70
@@ -325,7 +308,6 @@ def draw_shop(surf, mouse):
     overlay.fill((10, 5, 20, 150))
     surf.blit(overlay, (0, 0))
 
-    # картинка магазина
     shop_img = assets.load_image("assets_ui/shop.png")
     shop_img = pygame.transform.scale(shop_img, (260, 260))
     surf.blit(shop_img, (60, 120))
@@ -361,7 +343,6 @@ def draw_shop(surf, mouse):
              center=(cx + cw - 50, cy + ch // 2))
         GAME.shop_buttons.append((r, item))
 
-    # кнопка "В бой"
     fight = pygame.Rect(C.VIRTUAL_W // 2 - 160, 620, 320, 70)
     hover = fight.collidepoint(mouse)
     pygame.draw.rect(surf, C.RED if hover else (120, 40, 40), fight,
@@ -377,17 +358,17 @@ def draw_shop(surf, mouse):
 
 def draw_hud(surf):
     p = GAME.player
-    # HP — полоска с числом справа сверху
+
     bar_w, bar_h = 280, 26
     bx = C.VIRTUAL_W - bar_w - 30
     by = 28
     draw_bar(surf, bx, by, bar_w, bar_h, p.hp / p.max_hp, C.RED)
     text(surf, "HP %d/%d" % (p.hp, p.max_hp), F_SMALL, C.WHITE,
          center=(bx + bar_w // 2, by + bar_h // 2))
-    # монеты
+
     text(surf, "Монеты: %d" % p.coins, F_MED, C.GOLD,
          topleft=(C.VIRTUAL_W - 240, 66))
-    # мана — полоска с числом слева сверху (как HP)
+
     if p.max_mana > 0:
         mbw, mbh = 240, 22
         mbx, mby = 30, 30
@@ -395,7 +376,6 @@ def draw_hud(surf):
         text(surf, "MANA %d/%d" % (int(p.mana), int(p.max_mana)),
              F_SMALL, C.WHITE, center=(mbx + mbw // 2, mby + mbh // 2))
 
-    # статусы способностей слева снизу (стопкой)
     yb = C.VIRTUAL_H - 40
     if p.shield_up:
         sh_txt, sh_col = "ЩИТ: АКТИВЕН", (140, 210, 255)
@@ -422,12 +402,10 @@ def draw_hud(surf):
         text(surf, au_txt, F_SMALL, au_col, topleft=(30, yb))
         yb -= 28
 
-    # индикатор бессмертия
     if p.god_mode:
         text(surf, "БЕССМЕРТИЕ (P)", F_SMALL, (120, 255, 160),
              topleft=(30, yb))
 
-    # таймер по центру (общий)
     t = GAME.total_time / 1000.0
     mm = int(t // 60)
     ss = int(t % 60)
@@ -435,14 +413,13 @@ def draw_hud(surf):
     tstr = "%02d:%02d.%03d" % (mm, ss, ms)
     text(surf, tstr, F_BIG, C.WHITE, midtop=(C.VIRTUAL_W // 2, 16))
 
-    # имя и hp босса
     b = GAME.boss
     if b:
         text(surf, b.name, F_MED, C.WHITE, midtop=(C.VIRTUAL_W // 2, 80))
         bw2, bh2 = 600, 26
         bx2 = C.VIRTUAL_W // 2 - bw2 // 2
         draw_bar(surf, bx2, 120, bw2, bh2, b.hp / b.max_hp, C.RED)
-        cur = max(0, int(b.hp + 0.999))   # округление вверх
+        cur = max(0, int(b.hp + 0.999))
         text(surf, "%d / %d" % (cur, int(b.max_hp)), F_SMALL, C.WHITE,
              center=(bx2 + bw2 // 2, 120 + bh2 // 2))
 
@@ -453,11 +430,10 @@ def update_battle(dt, keys):
     GAME.total_time += dt
     GAME.boss_fight_time += dt
 
-    hp_before = p.hp        # для счётчика «босс не наносил урон» (энергоформа)
+    hp_before = p.hp
     p.update(keys)
     b.update(p)
 
-    # удар игрока мечом (с шансом уворота босса)
     if p.attacking and not p.hit_done and 4 <= p.attack_timer <= 12:
         if p.attack_hitbox().colliderect(b.rect):
             chance = C.DODGE_CHANCE.get(GAME.difficulty, 0.25)
@@ -466,61 +442,55 @@ def update_battle(dt, keys):
                 GAME.add_popup(b.x, b.y - b.h - 8, "MISS!", (255, 235, 120))
             else:
                 b.take_damage(p.damage)
-                b.knockback(p.x)            # отброс при попадании
-                b.end_flight()             # сбить с летающего портала
+                b.knockback(p.x)
+                b.end_flight()
             p.hit_done = True
 
-    # аура огня: снимает до AURA_BUDGET HP за цикл, затем пауза 5 сек
     aura = p.aura_hitbox()
     if aura and aura.colliderect(b.rect):
         dmg = C.AURA_DPS
         b.take_damage(dmg)
-        b.end_flight()                # огненная аура тоже сбивает с полёта
+        b.end_flight()
         p.aura_dealt += dmg
         if p.aura_dealt >= C.AURA_BUDGET:
             p.aura_dealt = 0.0
             p.aura_off = C.AURA_OFF_TIME
 
-    # файрболы
     for f in GAME.fireballs:
         f.update()
         if f.alive and f.rect.colliderect(b.rect):
             b.take_damage(f.damage)
             b.knockback(f.x)
-            b.end_flight()            # фаербол сбивает летающего мага
+            b.end_flight()
             f.alive = False
     GAME.fireballs = [f for f in GAME.fireballs if f.alive]
 
-    # атака босса по игроку (ближний бой — активная фаза полного взмаха)
     if b.melee_active and not b.hit_done:
         if b.attack_hitbox().colliderect(p.rect):
             dmg = 2 if b.is_final else 1
             if p.take_damage(dmg, direct=True):
                 b.hit_done = True
 
-    # луч босса (beam)
     if b.beam_active:
         hb = b.beam_hitbox()
         if hb and hb.colliderect(p.rect):
             p.take_damage(2 if b.is_final else 1, direct=True)
 
-    # новые снаряды от босса
     if b.new_projectiles:
         GAME.boss_projectiles.extend(b.new_projectiles)
         b.new_projectiles = []
-    # обновление снарядов босса
+
     for pr in GAME.boss_projectiles:
         pr.update()
         if pr.alive and pr.rect.colliderect(p.rect):
             dmg = 2 if b.is_final else 1
             p.take_damage(dmg, direct=True)
-            # отталкивание снарядами — только если щит НЕ активен
+
             if getattr(pr, "shove", 0) and not p.shield_up:
                 p.shove(pr.x, power=pr.shove)
             pr.alive = False
     GAME.boss_projectiles = [pr for pr in GAME.boss_projectiles if pr.alive]
 
-    # миньоны (призыв) + эффекты появления
     if b.new_minions:
         GAME.minions.extend(b.new_minions)
         b.new_minions = []
@@ -529,39 +499,34 @@ def update_battle(dt, keys):
         b.new_vfx = []
     for m in GAME.minions:
         m.update(p)
-        # меч игрока убивает слизня
+
         if (p.attacking and 4 <= p.attack_timer <= 12
                 and p.attack_hitbox().colliderect(m.rect)):
             m.alive = False
-        # контакт со слизнем — снимает HP (с откатом, слизень живёт дальше)
+
         elif m.alive and m.hit_cd <= 0 and m.rect.colliderect(p.rect):
             p.take_damage(m.damage, direct=True)
             m.hit_cd = 45
-        # поф при гибели слизня
+
         if not m.alive and getattr(m, "death_frames", None):
             GAME.vfx.append(VFX(m.x, C.GROUND_Y, m.death_frames))
     GAME.minions = [m for m in GAME.minions if m.alive]
 
-    # одноразовые эффекты
     for fx in GAME.vfx:
         fx.update()
     GAME.vfx = [fx for fx in GAME.vfx if fx.alive]
 
-    # всплывающие надписи
     for pop in GAME.popups:
         pop["y"] -= 0.8
         pop["life"] -= 1
     GAME.popups = [pp for pp in GAME.popups if pp["life"] > 0]
 
-    # босс нанёс игроку урон -> сброс счётчика «без урона» (для энергоформы)
     if p.hp < hp_before:
         b.no_dmg_timer = 0
 
-    # смерть босса
     if b.dead and b.death_timer <= 0:
         GAME.boss_defeated()
 
-    # смерть игрока
     if p.hp <= 0:
         GAME.state = "GAMEOVER"
 
@@ -570,10 +535,9 @@ def draw_battle(surf):
     data = C.BOSSES[GAME.boss_index]
     bg = GAME.get_bg(data["bg"], (C.VIRTUAL_W, C.VIRTUAL_H))
     surf.blit(bg, (0, 0))
-    # пол-тень
+
     pygame.draw.rect(surf, (0, 0, 0, 0), (0, C.GROUND_Y, C.VIRTUAL_W, 4))
 
-    # лёгкая маркировка стен (где можно цепляться)
     wm = C.WALL_MARGIN
     wall = pygame.Surface((wm, C.GROUND_Y), pygame.SRCALPHA)
     for i in range(wm):
@@ -583,7 +547,7 @@ def draw_battle(surf):
     rwall = pygame.transform.flip(wall, True, False)
     surf.blit(rwall, (C.VIRTUAL_W - wm, 0))
 
-    GAME.boss.draw_fire(surf)        # огонь/подсветка половины карты (boss7)
+    GAME.boss.draw_fire(surf)
     GAME.boss.draw(surf)
     for m in GAME.minions:
         m.draw(surf)
@@ -594,7 +558,7 @@ def draw_battle(surf):
         f.draw(surf)
     for pr in GAME.boss_projectiles:
         pr.draw(surf)
-    # всплывающие надписи (MISS! и т.п.)
+
     for pop in GAME.popups:
         img = F_SMALL.render(pop["txt"], True, pop["color"])
         img.set_alpha(int(255 * pop["life"] / pop["max"]))
@@ -662,18 +626,17 @@ def draw_gameover(surf):
          center=(C.VIRTUAL_W // 2, 450))
 
 
-# =====================================================================
-#  ОБРАБОТКА СОБЫТИЙ
-# =====================================================================
 def handle_event(e):
     if e.type == pygame.QUIT:
-        pygame.quit(); sys.exit()
+        pygame.quit()
+        sys.exit()
     if e.type == pygame.KEYDOWN:
         if e.key == pygame.K_ESCAPE:
-            pygame.quit(); sys.exit()
+            pygame.quit()
+            sys.exit()
         if GAME.state == "BATTLE":
             p = GAME.player
-            if e.key in (pygame.K_SPACE, pygame.K_w):
+            if e.key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
                 p.jump()
             if e.key == pygame.K_f:
                 p.start_attack()
@@ -682,7 +645,7 @@ def handle_event(e):
             if e.key == pygame.K_g:
                 p.start_shield()
             if e.key == pygame.K_p:
-                p.god_mode = not p.god_mode   # чит: бессмертие
+                p.god_mode = not p.god_mode
             if e.key == pygame.K_e:
                 fb = p.try_fireball()
                 if fb:
@@ -709,9 +672,6 @@ def handle_event(e):
                         GAME.buy(item)
 
 
-# =====================================================================
-#  ГЛАВНЫЙ ЦИКЛ
-# =====================================================================
 def main():
     while True:
         dt = clock.tick(C.FPS)
@@ -721,10 +681,8 @@ def main():
         keys = pygame.key.get_pressed()
         mouse_v = to_virt(pygame.mouse.get_pos())
 
-        # курсор виден только там, где нужно кликать (меню/магазин)
         pygame.mouse.set_visible(GAME.state in ("MENU", "SHOP"))
 
-        # музыка по состоянию
         if GAME.state == "BATTLE":
             music.play("battle", 0.45)
         else:
@@ -733,7 +691,6 @@ def main():
         if GAME.state == "BATTLE":
             update_battle(dt, keys)
 
-        # отрисовка
         virt.fill(C.BLACK)
         if GAME.state == "MENU":
             draw_menu(virt, mouse_v)
@@ -748,7 +705,6 @@ def main():
         elif GAME.state == "GAMEOVER":
             draw_gameover(virt)
 
-        # масштаб на экран
         screen.fill(C.BLACK)
         scaled = pygame.transform.scale(virt, (_blit_w, _blit_h))
         screen.blit(scaled, (_blit_x, _blit_y))
